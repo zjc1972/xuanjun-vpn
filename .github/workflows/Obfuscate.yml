@@ -1,12 +1,12 @@
-name: Build Obfuscate BPB Panel
+name: Build and Obfuscate BPB Panel
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
   schedule:
-        # Runs everyday at 1:00 AM
-        - cron: "0 1 * * *"
+    - cron: "0 1 * * *"  # 每天凌晨1点自动运行
 
 permissions:
   contents: write
@@ -14,9 +14,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out the code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Node.js
@@ -24,31 +23,30 @@ jobs:
         with:
           node-version: "latest"
 
-      - name: Install dependencies
-        run: |
-          npm install -g javascript-obfuscator
+      - name: Install javascript-obfuscator
+        run: npm install -g javascript-obfuscator
 
-      - name: Clone BPB workjs
+      - name: Download BPB source code
         run: |
-          wget -O origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/refs/heads/main/build/unobfuscated-worker.js
-      
+          wget -O origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js || echo "下载失败，请检查网址"
+
       - name: Obfuscate BPB worker js
         run: |
           javascript-obfuscator origin.js --output _worker.js \
-          --compact true \
-          --control-flow-flattening true \
-          --control-flow-flattening-threshold 1 \
-          --dead-code-injection true \
-          --dead-code-injection-threshold 1 \
-          --identifier-names-generator hexadecimal \
-          --rename-globals true \
-          --string-array true \
-          --string-array-encoding 'rc4' \
-          --string-array-threshold 1 \
-          --transform-object-keys true \
-          --unicode-escape-sequence true
+            --compact true \
+            --control-flow-flattening true \
+            --control-flow-flattening-threshold 1 \
+            --dead-code-injection true \
+            --dead-code-injection-threshold 1 \
+            --identifier-names-generator hexadecimal \
+            --rename-globals true \
+            --string-array true \
+            --string-array-encoding 'rc4' \
+            --string-array-threshold 1 \
+            --transform-object-keys true \
+            --unicode-escape-sequence true
 
-      - name: Commit changes
+      - name: Commit & Push origin.js and _worker.js
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           branch: main
