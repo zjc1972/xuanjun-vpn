@@ -1,4 +1,4 @@
-name: Build and Obfuscate BPB Panel
+name: Build & Obfuscate BPB Panel (robust)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    - cron: "0 1 * * *"  # 每天凌晨1点自动运行
+    - cron: "0 1 * * *"  # 每天 UTC 01:00 自动运行
 
 permissions:
   contents: write
@@ -15,22 +15,93 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "latest"
+          node-version: 'latest'
 
-      - name: Install javascript-obfuscator
+      - name: Install obfuscator
         run: npm install -g javascript-obfuscator
 
-      - name: Download BPB source code
+      - name: Try download release asset (.js or .zip) or raw paths
         run: |
-          wget -O origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js || echo "下载失败，请检查网址"
+          set -e
+          rm -f origin.js origin.zip _worker.js || true
 
-      - name: Obfuscate BPB worker js
+          echo "Trying release asset (latest) .js..."
+          if curl -sSfL -o origin.js "https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.js"; then
+            echo "downloaded unobfuscated-worker.js from releases/latest"
+          else
+            echo "Not found: unobfuscated-worker.js, try release asset .zip..."
+            if curl -sSfL -o origin.zip "https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.zip"; then
+              echo "downloaded unobfuscated-worker.zip from releases/latest"
+              # unzip and pick first .js
+              unzip -l origin.zip
+              mkdir -p origin_unzip
+              unzip -q origin.zip -d origin_unzip
+              jsfile=$(find origin_unzip -type f -name '*.js' | head -n 1 || true)
+              if [ -z "$jsfile" ]; then
+                echo "No .js inside origin.zip"
+                exit 2
+              fi
+              cp "$jsfile" origin.js
+              echo "extracted $jsfile -> origin.js"
+            else
+              echo "release asset not found. Try specific tag v3.5.5 raw path..."
+              # Try raw path for tag (v3.5.5)
+              curl -sSfL -o origin.js "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/v3.5.5/build/unobfuscated-worker.js" || true
+              if [ -s origin.js ]; then
+                echo "downloaded from v3.5.5/build/unobfuscated-worker.js"
+              else
+                echo "Try main/build/unobfuscated-worker.js..."
+                curl -sSfL -o origin.js "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js" || true
+                if [ -s origin.js ]; then
+                  echo "downloaded from main/build/unobfuscated-worker.js"
+                else
+                  echo "Try main/_worker.js..."
+                  curl -sSfL -o origin.js "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/_worker.js" || true
+                  if [ -s origin.js ]; then
+                    echo "downloaded from main/_worker.js"
+                  else
+                    echo "Try main/src/worker.js..."
+                    curl -sSfL -o origin.js "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/src/worker.js" || true
+                    if [ -s origin.js ]; then
+                      echo "downloaded from main/src/worker.js"
+                    else
+                      echo "All automatic download attempts failed."
+                      echo "Tried URLs:"
+                      echo " - https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.js"
+                      echo " - https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/latest/download/unobfuscated-worker.zip"
+                      echo " - https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/v3.5.5/build/unobfuscated-worker.js"
+                      echo " - https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
+                      echo " - https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/_worker.js"
+                      echo " - https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/src/worker.js"
+                      ls -lah origin.js origin.zip || true
+                      exit 2
+                    fi
+                  fi
+                fi
+              fi
+            fi
+          fi
+
+      - name: Sanity check origin.js
+        run: |
+          echo "origin.js size:" $(wc -c < origin.js || echo 0) "bytes"
+          if [ ! -s origin.js ]; then
+            echo "origin.js is empty - abort"
+            exit 2
+          fi
+          # quick content check
+          if ! grep -q -E "addEventListener|fetch\\(" origin.js; then
+            echo "Warning: origin.js may not be a worker script (no 'addEventListener' or 'fetch(' found). Showing head for debugging:"
+            head -n 60 origin.js || true
+          fi
+
+      - name: Obfuscate origin.js -> _worker.js
         run: |
           javascript-obfuscator origin.js --output _worker.js \
             --compact true \
@@ -46,10 +117,19 @@ jobs:
             --transform-object-keys true \
             --unicode-escape-sequence true
 
-      - name: Commit & Push origin.js and _worker.js
+      - name: Show sizes and sample
+        run: |
+          echo "origin.js size: $(wc -c < origin.js) bytes"
+          echo "_worker.js size: $(wc -c < _worker.js) bytes"
+          echo "Preview origin.js head:"
+          head -n 6 origin.js || true
+          echo "Preview _worker.js head:"
+          head -n 6 _worker.js || true
+
+      - name: Commit & push origin.js and _worker.js
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           branch: main
-          commit_message: ':arrow_up: update latest bpb panel'
+          commit_message: ':arrow_up: update origin.js + _worker.js'
           commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
           push_options: '--set-upstream'
